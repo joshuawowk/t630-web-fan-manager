@@ -1,30 +1,9 @@
-<<<<<<< HEAD:compose-dev.yml
-=======
-version: "3.3"
->>>>>>> origin/master:docker-compose.yml
 services:
-  fanManager:
-    image: ghcr.io/danielv123/servermanager:latest
-    restart: unless-stopped
+  app:
+    build: 
+      context: .
+      dockerfile: Dockerfile
     ports:
-      - 8085:8080 # external:internal
+      - "8083:8080" # external:internal
     volumes:
-<<<<<<< HEAD:compose-dev.yml
       - ./serverManager:/usr/src/app/data
-=======
-      - /home/jwowk/docker/serverManager:/usr/src/app/data
-  ouroboros: # For autoupdate, feel free to remove
-    container_name: ouroboros
-    hostname: ouroboros
-    image: pyouroboros/ouroboros
-    environment:
-      - CLEANUP=true
-      - INTERVAL=86400
-      - LOG_LEVEL=info
-      - SELF_UPDATE=true
-      - IGNORE=mongo influxdb postgres mariadb
-      - TZ=America/Chicago
-    restart: unless-stopped
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
->>>>>>> origin/master:docker-compose.yml
