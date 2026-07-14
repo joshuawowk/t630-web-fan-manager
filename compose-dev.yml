@@ -1,0 +1,9 @@
+services:
+  app:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8083:8080" # external:internal
+    volumes:
+      - ./serverManager:/usr/src/app/data
