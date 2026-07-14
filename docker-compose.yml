@@ -10,7 +10,7 @@ services:
     labels:
       homepage.group: "T630"
       homepage.name: "fanManager"
-      # homepage.icon: "emby.png"
+      homepage.icon: "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/reactjs.svg"
       homepage.href: "http://192.168.0.160:8085/"
       homepage.description: "fanManager - Dell Server Fan Controller "
   # ouroboros: # For autoupdate, feel free to remove
