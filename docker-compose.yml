@@ -3,7 +3,7 @@
 # push to master is a deploy. To roll back, revert the "Deploy sha-…" commit or pin an older sha- tag.
 services:
   fanManager:
-    image: ghcr.io/danielv123/servermanager@sha256:b8399fb2b1a067c2d8e6731b43daa739ce2593be3cbe8f34d1770b590c1c4009 # set by CI
+    image: ghcr.io/joshuawowk/t630-web-fan-manager:sha-20a12a74a5e418a0c4496228dd1f38c19c40ff29 # set by CI
     restart: unless-stopped
     # Time for the app to hand the fans back to the iDRAC before Docker kills it
     stop_grace_period: 30s
