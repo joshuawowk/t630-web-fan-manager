@@ -23,3 +23,6 @@ srv
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# Data dir of compose-dev.yml (servers.json holds iDRAC passwords)
+/serverManager
