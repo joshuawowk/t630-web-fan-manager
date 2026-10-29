@@ -4,6 +4,7 @@
 	"singleQuote": false,
 	"printWidth": 180,
 	"useTabs": true,
+	"trailingComma": "es5",
 	"overrides": [
 		{
 			"files": "*.md",

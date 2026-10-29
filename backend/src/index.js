@@ -1,229 +1,171 @@
-const fs = require("fs")
-const mkdirp = require("mkdirp")
-const express = require("express")
 const http = require("http")
-const promclient = require("prom-client")
-const process = require("process")
+const express = require("express")
+const { Server } = require("socket.io")
 
-const { calculateManualFanSpeed } = require("./fanControl")
+const settings = require("./config")
+const { createIpmi } = require("./ipmi")
+const { createStore, ValidationError } = require("./store")
+const { FanController } = require("./controller")
+const { createMetrics } = require("./metrics")
 
-console.log(process.argv)
-const port = process.argv[2] === "dev" ? 8082 : 8080
+const store = createStore({ dataDir: settings.dataDir })
+store.load()
 
-var app = express()
-var server = http.createServer(app)
-var io = require("socket.io").listen(server)
-server.listen(port)
-console.log("listening on port ", port)
+const ipmi = createIpmi({ ipmitoolPath: settings.ipmitoolPath, timeoutMs: settings.ipmiTimeoutMs, dryRun: settings.dryRun })
+const metrics = createMetrics()
 
-app.use("/", express.static("build"))
+const app = express()
+const server = http.createServer(app)
+const io = new Server(server, { serveClient: false })
+
+const controller = new FanController({
+	ipmi,
+	getServers: () => store.servers,
+	pollIntervalMs: settings.pollIntervalMs,
+	failsafeReadFailures: settings.failsafeReadFailures,
+	onPoll: (config, state) => {
+		metrics.recordPoll(config, state)
+		io.emit("sensordata", { id: config.id, name: config.name, sensordata: state.sensordata, status: controller.status(config.id) })
+	},
+	onError: (config, operation) => metrics.recordError(config, operation),
+	onCycle: (durationMs) => metrics.recordCycle(durationMs),
+})
+
+function publicView(config) {
+	const { password, ...rest } = config
+	return { ...rest, hasPassword: Boolean(password), sensordata: controller.sensordata(config.id), status: controller.status(config.id) }
+}
+
+function publicServers() {
+	return store.servers.map(publicView)
+}
+
+function broadcastServers() {
+	io.emit("servers", publicServers())
+}
+
+// Resolve within `ms` even if the work behind the promise carries on
+function within(promise, ms) {
+	return Promise.race([promise.then(() => true), new Promise((resolve) => setTimeout(() => resolve(false), ms).unref())])
+}
+
+app.use("/", express.static(settings.staticDir))
 app.get("/info", (req, res) => {
 	res.send("Dell server monitor express server")
 })
-
-// Set up prometheus
+app.get("/api/status", (req, res) => {
+	res.json(publicServers())
+})
+app.get("/healthz", (req, res) => {
+	const health = controller.health()
+	res.status(health.ok ? 200 : 503).json(health)
+})
 app.get("/metrics", async (req, res) => {
-	const metrics = await promclient.register.metrics()
-	res.set("Content-Type", promclient.register.contentType)
-	res.send(metrics)
-})
-promclient.collectDefaultMetrics({
-	labels: { application: "serverManager" },
-})
-const gauge = new promclient.Gauge({
-	name: "servermanager_statistics_gauge",
-	help: "Contains all gauge statistics from the dell server manager labeled by name and type, ex fan speed or temperature",
-	labelNames: ["name", "type", "unit", "address", "host_name"],
+	res.set("Content-Type", metrics.register.contentType)
+	res.send(await metrics.register.metrics())
 })
 
-const units = require("./units")
-const { getSensors, enableManualFancontrol, enableAutomaticFancontrol, setFanSpeed } = require("./ipmi")
-mkdirp.sync("./data")
-
-let serversOnDisk = ""
-try {
-	let data = fs.readFileSync("./data/servers.json", "utf8")
-	if (data) {
-		serversOnDisk = data
-		servers = JSON.parse(data)
-		console.log("Loaded server data from disk")
-	}
-} catch (e) {}
-function save() {
-	if (JSON.stringify(servers, null, 4) !== serversOnDisk) {
-		serversOnDisk = JSON.stringify(servers, null, 4)
-		fs.writeFileSync("./data/servers.json", JSON.stringify(servers, null, 4))
-		// console.log(Date.now() + "Saved servers")
-	}
-}
-setInterval(save, 60 * 1000) // Autosave once a minute if there are changes
-const clients = [
-	//     {
-	//     id: 1234,
-	//     tagListeners: [{tagname: "testTag"}],
-	//     socket: {},
-	// }
-]
-var servers = servers || [
-	{
-		name: "R720 main",
-		address: "192.168.10.170",
-		username: "root",
-		password: "calvin",
-		warnspeed: "3000",
-		sensordataRaw: [],
-		sensordata: [],
-	},
-	{
-		name: "R720 secondary",
-		address: "192.168.10.169",
-		username: "root",
-		password: "calvin",
-		warnspeed: "3000",
-		sensordataRaw: [],
-		sensordata: [],
-	},
-]
-
-// Startup tasks
-servers.forEach(async (server) => {
-	if (server.manualFanControl) {
-		await enableManualFancontrol(server)
-	} else {
-		await enableAutomaticFancontrol(server)
-	}
-})
-
-async function updateServers() {
-	for (let i in servers) {
-		let config = servers[i]
-		config.sensordataRaw = await getSensors(config)
-		// Transform sensor data into easier to use format
-		config.sensordata = config.sensordataRaw.map((sensor, i) => {
-			return {
-				name: sensor[0],
-				value: sensor[1],
-				unit: sensor[2],
-				status: sensor[3],
-				x: sensor[4],
-				ALL: sensor[5],
-				WL: sensor[6],
-				WH: sensor[7],
-				AHH: sensor[8],
-				y: sensor[9],
-				trend: Number(sensor[1]) - Number(config.sensordata[i]?.previousValue) || undefined,
-				previousValue: config.sensordata[i]?.value,
-			}
-		})
-		broadcast("sensordata", {
-			name: config.name,
-			sensordata: config.sensordata,
-		})
-		if (config.manualFanControl) {
-			const { targetFanSpeed, highestTemperature, reason } = calculateManualFanSpeed(config)
-			console.log("Highest temperature is", highestTemperature, reason ? `reason=${reason}` : "", "Setting fan speed", targetFanSpeed, "%")
-			setFanSpeed(config, targetFanSpeed)
+// Every client request is acknowledged with {ok: true, ...} or {ok: false, error}
+function handle(socket, event, handler) {
+	socket.on(event, async (payload, ack) => {
+		const reply = typeof ack === "function" ? ack : () => {}
+		try {
+			reply({ ok: true, ...((await handler(payload || {})) || {}) })
+		} catch (error) {
+			if (!(error instanceof ValidationError)) console.error(`${event} failed: ${error.stack || error}`)
+			reply({ ok: false, error: error.message })
 		}
-	}
-	// Report metrics to prometheus
-	promclient.register.resetMetrics()
-	for (let config of servers) {
-		config.sensordata
-			.filter((x) => !Number.isNaN(Number(x.value)))
-			.forEach((sensor) => {
-				gauge.set(
-					{
-						name: sensor.name,
-						type: units.unit_to_type[sensor.unit],
-						unit: sensor.unit,
-						address: config.address,
-						host_name: config.name,
-					},
-					Number(sensor.value)
-				)
-			})
-	}
+	})
 }
-function broadcast(channel, data) {
-	clients.forEach((client) => client.socket.emit(channel, data))
-}
-
-async function updateServerLoop() {
-	let lastUpdateStart = Date.now()
-	console.time("updateServers")
-	await updateServers()
-	console.timeEnd("updateServers")
-	setTimeout(updateServerLoop, lastUpdateStart - Date.now() + 30000)
-}
-updateServerLoop()
 
 io.on("connection", (socket) => {
-	socket.on("registerWebclient", ({ id }) => {
-		console.log("client is subscribing to timer with interval ")
-		let client = {
-			socket,
-			id,
-			tagListeners: [],
-			screenListeners: [],
+	socket.emit("servers", publicServers())
+	socket.on("registerWebclient", () => socket.emit("servers", publicServers()))
+
+	handle(socket, "addServer", async ({ server: input }) => {
+		const config = store.add(input)
+		console.log(`Added server ${config.name} (${config.address})`)
+		broadcastServers()
+		controller.poll(config.id).catch(() => {})
+		return { server: publicView(config) }
+	})
+
+	handle(socket, "updateServer", async ({ id, update }) => {
+		const existing = store.find(id)
+		if (!existing) throw new ValidationError("Server not found")
+		const before = { ...existing }
+		const { server: config, connectionChanged } = store.update(id, update)
+		console.log(
+			`Updated server ${config.name}: ${Object.keys(update || {})
+				.filter((key) => key !== "password" || update.password)
+				.join(", ")}`
+		)
+		if (connectionChanged) {
+			// The old iDRAC may be left in manual mode; hand it back before switching to the new connection
+			controller.enqueue(id, () => controller.release(before)).catch((error) => console.error(`[${before.name}] ${error.message}`))
+			controller.enqueue(id, () => controller.resetConnection(id))
 		}
-		clients.push(client)
-		socket.emit("servers", servers)
-		socket.on("updateServer", async ({ address, update }) => {
-			console.log("Updating server", address, cleanSensitive(update))
-			let server = servers.find((x) => x.address === address)
+		broadcastServers()
+		// Poll right away so a mode change reaches the iDRAC now rather than at the next cycle
+		controller.poll(id).catch(() => {})
+		return { server: publicView(config) }
+	})
 
-			// If we toggled the manualFanControl option, run IPMI to toggle fan control mode
-			if (server.manualFanControl !== update.manualFanControl) {
-				console.time("Changed fan control state")
-				if (update.manualFanControl) {
-					await enableManualFancontrol(update)
-				} else {
-					await enableAutomaticFancontrol(update)
-				}
-				console.timeEnd("Changed fan control state")
-			}
-
-			for (let key of Object.keys(update)) {
-				server[key] = update[key]
-			}
-			broadcast("servers", servers)
-
-			// Reset prometheus gauges in case some of the label names were changed
-			promclient.register.resetMetrics()
-		})
-		socket.on("addServer", ({ server }) => {
-			if (
-				server &&
-				!servers.find((x) => x.address == server.address) &&
-				!servers.find((x) => x.name == server.name) &&
-				server.name &&
-				server.address &&
-				server.username &&
-				server.password
-			) {
-				servers.push(server)
-				broadcast("servers", servers)
-			}
-		})
-		socket.on("deleteServer", ({ address }) => {
-			servers = servers.filter((x) => x.address !== address)
-			broadcast("servers", servers)
-		})
-		// socket.on("tagListen", ({ tagname, interval }) => {
-		// 	console.log("Adding listener for", tagname)
-		// 	client.tagListeners.push({ tagname })
-		// 	let tag = getTag(tagname)
-		// 	if (tag) socket.emit("tagValue", [tag])
-		// })
-
-		// setInterval(() => {
-		//     socket.emit('debug', new Date());
-		//     //   socket.emit("tagValue", tags)
-		// }, 1000);
+	handle(socket, "deleteServer", async ({ id }) => {
+		const config = store.find(id)
+		if (!config) throw new ValidationError("Server not found")
+		store.remove(id)
+		broadcastServers()
+		const release = controller.enqueue(id, () => controller.release(config, { timeout: 8000 }))
+		release
+			.catch((error) => console.error(`[${config.name}] Could not hand fan control back to the iDRAC: ${error.message}`))
+			.finally(() => {
+				controller.forget(id)
+				metrics.forgetServer(config)
+			})
+		console.log(`Deleted server ${config.name} (${config.address})`)
+		const handedBack = await within(
+			release.catch(() => {}),
+			9000
+		)
+		return { handedBack }
 	})
 })
-function cleanSensitive(object) {
-	let clean = { ...object }
-	if (clean.password) clean.password = "hidden"
-	return clean
+
+let shuttingDown = false
+async function shutdown(reason, exitCode) {
+	if (shuttingDown) return
+	shuttingDown = true
+	console.log(`${reason}: stopping${settings.restoreAutoOnExit ? " and handing fan control back to the iDRAC" : ""}`)
+	setTimeout(() => process.exit(exitCode), 25000).unref()
+	try {
+		await controller.shutdown({ restoreAuto: settings.restoreAutoOnExit })
+	} catch (error) {
+		console.error(`Shutdown error: ${error.stack || error}`)
+	}
+	try {
+		store.save()
+	} catch (error) {
+		console.error(`Could not save servers: ${error.message}`)
+	}
+	io.close()
+	server.close()
+	process.exit(exitCode)
 }
+
+process.on("SIGTERM", () => shutdown("SIGTERM", 0))
+process.on("SIGINT", () => shutdown("SIGINT", 0))
+// A crash must not leave the fans pinned: hand back to the iDRAC, then exit so Docker restarts us
+process.on("uncaughtException", (error) => {
+	console.error(`Uncaught exception: ${error.stack || error}`)
+	shutdown("Crash", 1)
+})
+process.on("unhandledRejection", (error) => {
+	console.error(`Unhandled rejection: ${error?.stack || error}`)
+	shutdown("Crash", 1)
+})
+
+server.listen(settings.port, () => {
+	console.log(`Listening on port ${settings.port}; polling every ${settings.pollIntervalMs / 1000} s${settings.dryRun ? "; DRY RUN, no fan commands are sent" : ""}`)
+	controller.start()
+})

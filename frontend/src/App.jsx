@@ -1,15 +1,13 @@
-import React, { Component } from "react"
+import React, { useEffect, useState } from "react"
 import "antd/dist/antd.css"
-import { getWebclient } from "./api/index"
-import Switch from "./components/Switch"
-import FanCurveGraph from "./components/FanCurveGraph"
-import { Layout, Menu, Typography, Card, Row, Col, Statistic, Divider, Tooltip, Tabs, Button, Input, Form, Popover } from "antd"
-import { LaptopOutlined, PlusOutlined, ArrowUpOutlined, ArrowDownOutlined, DeleteOutlined, SaveOutlined, SettingOutlined } from "@ant-design/icons"
+import { Button, Card, Layout, Menu, Tabs, Tag } from "antd"
+import { LaptopOutlined, PlusOutlined, SettingOutlined } from "@ant-design/icons"
+import { socket } from "./api"
+import ServerOverview from "./components/ServerOverview"
+import ServerForm from "./components/ServerForm"
+import AddServerModal from "./components/AddServerModal"
 
-const { TabPane } = Tabs
-const { SubMenu } = Menu
 const { Content, Sider } = Layout
-let socket
 
 function getValue(key) {
 	try {
@@ -21,302 +19,107 @@ function getValue(key) {
 function setValue(key, value) {
 	localStorage[key] = JSON.stringify(value)
 }
-class App extends Component {
-	constructor(props) {
-		super(props)
-		this.state = {
-			editor: true,
-			servers: [],
-			selectedKeys: getValue("selectedKeys") || [],
+
+function useConnected() {
+	const [connected, setConnected] = useState(socket.connected)
+	useEffect(() => {
+		const up = () => setConnected(true)
+		const down = () => setConnected(false)
+		socket.on("connect", up)
+		socket.on("disconnect", down)
+		setConnected(socket.connected)
+		return () => {
+			socket.off("connect", up)
+			socket.off("disconnect", down)
 		}
-	}
-	componentDidMount() {
-		socket = getWebclient()
-		socket.on("servers", (servers) => this.setState({ servers }))
-		socket.on("sensordata", (data) => {
-			let servers = this.state.servers
-			let server = servers.find((x) => x.name === data.name)
-			if (server) {
-				server.sensordata = data.sensordata
-				this.setState({ servers })
-			} else {
-				console.error("Couldn't find server for sensordata: ", data, this.state)
-			}
-		})
-	}
-	render() {
-		let servers = this.state.servers.filter((x) => this.state.selectedKeys.includes(x.address))
-		return (
-			<Layout style={{ height: "100%" }}>
-				<Layout>
-					<Sider width={200} className="site-layout-background">
-						<Menu
-							multiple
-							mode="inline"
-							defaultSelectedKeys={this.state.selectedKeys}
-							defaultOpenKeys={["servers"]}
-							style={{ height: "100%", borderRight: 0 }}
-							onSelect={({ selectedKeys }) => {
-								console.log(selectedKeys)
-								this.setState({ selectedKeys })
-								setValue("selectedKeys", selectedKeys)
-							}}
-							onDeselect={({ selectedKeys }) => {
-								console.log(selectedKeys)
-								this.setState({ selectedKeys })
-								setValue("selectedKeys", selectedKeys)
-							}}
-						>
-							<SubMenu key="servers" icon={<LaptopOutlined />} title="Servers">
-								{this.state.servers.map((server) => (
-									<Menu.Item key={server.address}>{server.name}</Menu.Item>
-								))}
-							</SubMenu>
-							<Menu.Item key="admin" icon={<SettingOutlined />}>
-								Admin
-							</Menu.Item>
-						</Menu>
-					</Sider>
-					<Layout>
-						<Content
-							className="site-layout-background"
-							style={{
-								padding: 0,
-								margin: 0,
-								minHeight: 280,
-							}}
-						>
-							{servers?.map(renderServerOverview)}
-							{this.state.selectedKeys.includes("admin") && (
-								<Card title="Admin">
-									<Tabs
-										tabBarExtraContent={
-											<Button
-												type="primary"
-												onClick={() => {
-													socket.emit("addServer", {
-														server: {
-															name: "New server",
-															address: "192.168.0.1",
-															username: "root",
-															password: "calvin",
-															warnspeed: "3000",
-														},
-													})
-												}}
-											>
-												<PlusOutlined /> Add server
-											</Button>
-										}
-									>
-										{this.state.servers.map((server) => (
-											<TabPane tab={server.name} key={server.address}>
-												<Form
-													{...layout}
-													name="basic"
-													initialValues={server}
-													onFinish={(data) => {
-														socket.emit("updateServer", {
-															address: server.address,
-															update: data,
-														})
-													}}
-												>
-													<Form.Item
-														label="Name"
-														name="name"
-														rules={[
-															{
-																required: true,
-																message: "Please input a server name",
-															},
-														]}
-													>
-														<Input />
-													</Form.Item>
-													<Form.Item
-														label="Address/hostname"
-														name="address"
-														rules={[
-															{
-																required: true,
-																message: "Please input idrac address/hostname",
-															},
-														]}
-													>
-														<Input />
-													</Form.Item>
-													<Form.Item
-														label="Username"
-														name="username"
-														rules={[
-															{
-																required: true,
-																message: "Please input idrac username (usually root)",
-															},
-														]}
-													>
-														<Input />
-													</Form.Item>
-													<Form.Item
-														label="Password"
-														name="password"
-														rules={[
-															{
-																required: true,
-																message: "Please input the idrac password",
-															},
-														]}
-													>
-														<Input.Password />
-													</Form.Item>
-													<Form.Item
-														label="Warning Speed"
-														name="warnspeed"
-														rules={[
-															{
-																required: true,
-																message: "Please input the fan threshold RPM",
-															},
-														]}
-													>
-														<Input />
-													</Form.Item>
-													<Divider>Custom fan control</Divider>
-													<Form.Item label="Custom fan control" name="manualFanControl">
-														<Switch checkedChildren="Enabled" unCheckedChildren="Disabled" />
-													</Form.Item>
-													<Row>
-														<Col span={layout.labelCol.span}></Col>
-														<Col span={layout.wrapperCol.span}>
-															<FanCurveGraph />
-														</Col>
-													</Row>
-													<Form.Item {...tailLayout}>
-														<Button type="primary" htmlType="submit">
-															<SaveOutlined /> Save
-														</Button>
-														<Popover
-															trigger="click"
-															content={
-																<Button type="primary" danger onClick={() => socket.emit("deleteServer", { address: server.address })}>
-																	Delete server
-																</Button>
-															}
-														>
-															<Button danger>
-																<DeleteOutlined /> Delete
-															</Button>
-														</Popover>
-													</Form.Item>
-												</Form>
-											</TabPane>
-										))}
-									</Tabs>
-								</Card>
-							)}
-						</Content>
-					</Layout>
-				</Layout>
-			</Layout>
-		)
-	}
+	}, [])
+	return connected
 }
 
-function renderServerOverview(server) {
+function App() {
+	const [servers, setServers] = useState([])
+	const [selectedKeys, setSelectedKeys] = useState(() => getValue("selectedKeys") || [])
+	const [activeTab, setActiveTab] = useState()
+	const [adding, setAdding] = useState(false)
+	const connected = useConnected()
+
+	useEffect(() => {
+		const onServers = (list) => setServers(list)
+		const onSensordata = (data) =>
+			setServers((prev) => prev.map((s) => (s.id === data.id ? { ...s, name: data.name ?? s.name, sensordata: data.sensordata, status: data.status } : s)))
+		socket.on("servers", onServers)
+		socket.on("sensordata", onSensordata)
+		return () => {
+			socket.off("servers", onServers)
+			socket.off("sensordata", onSensordata)
+		}
+	}, [])
+
+	// Saved selections from before servers had ids hold iDRAC addresses; fall back to showing every server
+	useEffect(() => {
+		if (servers.length && !selectedKeys.some((key) => key === "admin" || servers.some((server) => server.id === key))) {
+			setSelectedKeys(servers.map((server) => server.id))
+		}
+	}, [servers.length]) // eslint-disable-line react-hooks/exhaustive-deps
+
+	const select = ({ selectedKeys }) => {
+		setSelectedKeys(selectedKeys)
+		setValue("selectedKeys", selectedKeys)
+	}
+
+	const visible = servers.filter((x) => selectedKeys.includes(x.id))
+	const currentTab = servers.some((x) => x.id === activeTab) ? activeTab : servers[0]?.id
+
+	const items = [
+		{ key: "servers", icon: <LaptopOutlined />, label: "Servers", children: servers.map((server) => ({ key: server.id, label: server.name })) },
+		{ key: "admin", icon: <SettingOutlined />, label: "Admin" },
+	]
+
 	return (
-		server && (
-			<Card>
-				<Typography.Title>{server.name}</Typography.Title>
-				<Divider orientation="left">Power</Divider>
-				<Row>
-					{server.sensordata && server.sensordata
-						.filter((x) => ["Volts", "Amps", "Watts"].includes(x?.unit))
-						.map((sensor, i) => (
-							<Tooltip key={sensor.name + sensor.unit + i} title={`Previous value: ${Math.floor(sensor?.previousValue)}`}>
-								<Col span={4}>
-									<Statistic
-										title={sensor?.name}
-										value={sensor?.value}
-										precision={sensor.unit.includes("Amps") ? 2 : 0}
-										// prefix={sensor?.trend > 0 && <ArrowUpOutlined /> || sensor?.trend < 0 && <ArrowDownOutlined />}
-										suffix={
-											<span>
-												{sensor?.unit} {(sensor?.trend > 0 && <ArrowUpOutlined />) || (sensor?.trend < 0 && <ArrowDownOutlined />)}
-											</span>
-										}
-										valueStyle={{
-											color:
-												(sensor.unit !== "Watts" && " ") ||
-												(Number(sensor.value) < Number(200) && "#3f8600") ||
-												(Number(sensor.value) < Number(sensor.WH) && " ") ||
-												"#cf1322",
-										}}
-									/>
-								</Col>
-							</Tooltip>
+		<Layout style={{ height: "100%" }}>
+			<Layout>
+				<Sider width={200} className="site-layout-background">
+					<div style={{ padding: "12px 16px" }}>
+						<Tag color={connected ? "green" : "red"}>{connected ? "Connected" : "Disconnected"}</Tag>
+					</div>
+					<Menu
+						multiple
+						mode="inline"
+						items={items}
+						selectedKeys={selectedKeys}
+						defaultOpenKeys={["servers"]}
+						style={{ borderRight: 0 }}
+						onSelect={select}
+						onDeselect={select}
+					/>
+				</Sider>
+				<Layout>
+					<Content className="site-layout-background" style={{ padding: 0, margin: 0, minHeight: 280 }}>
+						{visible.map((server) => (
+							<ServerOverview key={server.id} server={server} />
 						))}
-				</Row>
-				<Divider orientation="left">Temperature</Divider>
-				<Row>
-					{server.sensordata && server.sensordata
-						.filter((x) => x?.unit === "degrees C")
-						.map((sensor) => (
-							<Tooltip title={`Previous value: ${Math.floor(sensor?.previousValue)}`}>
-								<Col span={4}>
-									<Statistic
-										title={sensor?.name}
-										value={sensor?.value}
-										precision={0}
-										suffix={<span>C {(sensor?.trend > 0 && <ArrowUpOutlined />) || (sensor?.trend < 0 && <ArrowDownOutlined />)}</span>}
-										valueStyle={{
-											color: (Number(sensor.value) > Number(sensor.WL) && Number(sensor.value) < Number(sensor.WH) && " ") || "#cf1322",
-										}}
-									/>
-								</Col>
-							</Tooltip>
-						))}
-				</Row>
-				<Divider orientation="left">Fans</Divider>
-				<Row>
-					{server.sensordata && server.sensordata
-						.filter((x) => ["RPM"].includes(x?.unit))
-						.map((sensor) => (
-							<Tooltip title={`Previous value: ${Math.floor(sensor?.previousValue)}`}>
-								<Col span={4}>
-									<Statistic
-										title={sensor?.name}
-										value={sensor?.value}
-										precision={0}
-										suffix={
-											<span>
-												{sensor?.unit} {(sensor?.trend > 0 && <ArrowUpOutlined />) || (sensor?.trend < 0 && <ArrowDownOutlined />)}
-											</span>
-										}
-										valueStyle={{
-											color: (Number(sensor.value) > Number(sensor.WL) && Number(sensor.value) < Number(server.warnspeed) && " ") /*"#3f8600" green */ || "#cf1322",
-										}}
-									/>
-								</Col>
-							</Tooltip>
-						))}
-				</Row>
-			</Card>
-		)
+						{selectedKeys.includes("admin") && (
+							<Card
+								title="Admin"
+								extra={
+									<Button type="primary" onClick={() => setAdding(true)}>
+										<PlusOutlined /> Add server
+									</Button>
+								}
+							>
+								<Tabs
+									activeKey={currentTab}
+									onChange={setActiveTab}
+									items={servers.map((server) => ({ key: server.id, label: server.name, children: <ServerForm server={server} /> }))}
+								/>
+							</Card>
+						)}
+					</Content>
+				</Layout>
+			</Layout>
+			<AddServerModal open={adding} onClose={() => setAdding(false)} />
+		</Layout>
 	)
 }
-const layout = {
-	labelCol: {
-		span: 8,
-	},
-	wrapperCol: {
-		span: 16,
-	},
-}
-const tailLayout = {
-	wrapperCol: {
-		offset: 8,
-		span: 16,
-	},
-}
+
 export default App

@@ -13,7 +13,7 @@ class InlineSlider extends React.PureComponent {
 		const currentValue = value || 0
 		const delta = e.deltaY > 0 ? -1 : 1
 		const newValue = Math.max(min, Math.min(max, currentValue + delta))
-		
+
 		if (onChange && newValue !== currentValue) {
 			onChange(newValue)
 		}
@@ -21,10 +21,7 @@ class InlineSlider extends React.PureComponent {
 
 	render() {
 		return (
-			<div 
-				style={{ height: 300, width: 80, display: "inline-block", userSelect: "none" }}
-				onWheel={this.handleWheel}
-			>
+			<div style={{ height: 300, width: 80, display: "inline-block", userSelect: "none" }} onWheel={this.handleWheel}>
 				<Slider {...this.props} />
 			</div>
 		)

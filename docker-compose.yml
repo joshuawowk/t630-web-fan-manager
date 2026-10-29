@@ -1,29 +1,24 @@
-version: "3.3"
+# t630 production stack: Portainer stack 8 on t630 polls this file on master and redeploys when it changes.
+# CI rewrites the image line after every master build (see .github/workflows/docker-publish.yml), so a
+# push to master is a deploy. To roll back, revert the "Deploy sha-…" commit or pin an older sha- tag.
 services:
   fanManager:
-    image: ghcr.io/danielv123/servermanager:latest
+    image: ghcr.io/danielv123/servermanager@sha256:b8399fb2b1a067c2d8e6731b43daa739ce2593be3cbe8f34d1770b590c1c4009 # set by CI
     restart: unless-stopped
+    # Time for the app to hand the fans back to the iDRAC before Docker kills it
+    stop_grace_period: 30s
     ports:
       - 8085:8080 # external:internal
     volumes:
       - /home/jwowk/docker/serverManager:/usr/src/app/data
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
     # labels:
     #   homepage.group: "T630"
     #   homepage.name: "fanManager"
     #   homepage.icon: "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/reactjs.svg"
     #   homepage.href: "http://192.168.0.160:8085/"
     #   homepage.description: "fanManager - Dell Server Fan Controller "
-  # ouroboros: # For autoupdate, feel free to remove
-  #   container_name: ouroboros
-  #   hostname: ouroboros
-  #   image: pyouroboros/ouroboros
-  #   environment:
-  #     - CLEANUP=true
-  #     - INTERVAL=86400
-  #     - LOG_LEVEL=info
-  #     - SELF_UPDATE=true
-  #     - IGNORE=mongo influxdb postgres mariadb
-  #     - TZ=America/Chicago
-  #   restart: unless-stopped
-  #   volumes:
-  #     - /var/run/docker.sock:/var/run/docker.sock

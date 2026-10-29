@@ -3,7 +3,11 @@ import { Form, Button, Tooltip } from "antd"
 import { PlusOutlined, ArrowUpOutlined, ArrowDownOutlined, DeleteOutlined } from "@ant-design/icons"
 import InlineSlider from "./InlineSlider"
 
-const FanCurveGraph = ({ form }) => {
+const clamp = (x) => Math.max(0, Math.min(100, x))
+const fieldProps = ({ key, ...rest }) => rest
+
+const FanCurveGraph = ({ operatingPoint }) => {
+	const hasPoint = typeof operatingPoint?.temperature === "number" && typeof operatingPoint?.speed === "number"
 	return (
 		<Form.List name="fancurve">
 			{(fields, { add, remove, move }) => (
@@ -141,19 +145,34 @@ const FanCurveGraph = ({ form }) => {
 													{fields.map((field, index) => {
 														const x = (index / (fields.length - 1)) * 100
 														const y = 100 - (fancurve[index] || 0)
-														return (
-															<circle
-																key={`point-${field.key}`}
-																cx={`${x}%`}
-																cy={`${y}%`}
-																r="5"
-																fill="#1890ff"
-																stroke="#fff"
-																strokeWidth="2"
-															/>
-														)
+														return <circle key={`point-${field.key}`} cx={`${x}%`} cy={`${y}%`} r="5" fill="#1890ff" stroke="#fff" strokeWidth="2" />
 													})}
 												</>
+											)}
+											{/* Current operating point */}
+											{hasPoint && (
+												<g>
+													<circle
+														cx={`${clamp(operatingPoint.temperature)}%`}
+														cy={`${100 - clamp(operatingPoint.speed)}%`}
+														r="6"
+														fill="#fa541c"
+														stroke="#fff"
+														strokeWidth="2"
+													/>
+													<text
+														x={`${clamp(operatingPoint.temperature)}%`}
+														y={`${100 - clamp(operatingPoint.speed)}%`}
+														dx={operatingPoint.temperature > 70 ? -10 : 10}
+														dy={operatingPoint.speed > 90 ? 16 : -10}
+														textAnchor={operatingPoint.temperature > 70 ? "end" : "start"}
+														fontSize="11"
+														fontWeight="bold"
+														fill="#d4380d"
+													>
+														{`${operatingPoint.temperature} °C → ${operatingPoint.speed} %`}
+													</text>
+												</g>
 											)}
 										</svg>
 
@@ -173,13 +192,13 @@ const FanCurveGraph = ({ form }) => {
 													}}
 												>
 													<Form.Item
-														{...field}
+														{...fieldProps(field)}
 														style={{
 															marginBottom: 0,
 															height: "100%",
 														}}
 													>
-														<InlineSlider min={0} max={100} vertical defaultValue={20} style={{ height: "100%" }} />
+														<InlineSlider min={0} max={100} vertical style={{ height: "100%" }} />
 													</Form.Item>
 
 													{/* Control buttons */}
@@ -241,7 +260,7 @@ const FanCurveGraph = ({ form }) => {
 															whiteSpace: "nowrap",
 														}}
 													>
-														{Math.floor((index / (fields.length - 1)) * 100)}°C
+														{Math.round((index / (fields.length - 1)) * 100)}°C
 													</div>
 												</div>
 											))}
@@ -268,4 +287,3 @@ const FanCurveGraph = ({ form }) => {
 }
 
 export default FanCurveGraph
-
