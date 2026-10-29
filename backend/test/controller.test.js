@@ -207,4 +207,91 @@ describe("FanController", () => {
 		expect(controller.status("s1").mode).toBe("manual")
 		expect(controller.status("bad").lastError.message).toBe("unexpected")
 	})
+
+	it("hands control to the iDRAC when custom control is turned off even while sensor reads fail", async () => {
+		const { controller, ipmi, server } = setup()
+		await controller.poll("s1")
+		ipmi.failReads = true
+		server.manualFanControl = false
+		ipmi.reset()
+		await controller.poll("s1")
+		expect(ipmi.commands()).toEqual([["automatic"]])
+		expect(controller.status("s1").mode).toBe("automatic")
+	})
+
+	it("treats a failed mode command as unknown, so the failsafe still sends automatic", async () => {
+		const { controller, ipmi } = setup()
+		ipmi.failReads = true
+		for (let i = 0; i < 3; i++) await controller.poll("s1")
+		expect(controller.status("s1").mode).toBe("failsafe")
+		// Reads recover, but the manual command errors (it may still have reached the iDRAC)
+		ipmi.failReads = false
+		ipmi.enableManualFancontrol = async () => {
+			throw Object.assign(new Error("ipmitool raw failed (timed out after 20s)"), { operation: "manual" })
+		}
+		ipmi.reset()
+		await controller.poll("s1")
+		expect(controller.status("s1")).toMatchObject({ mode: "failsafe", consecutiveFailures: 4 })
+		expect(ipmi.commands()).toEqual([["automatic"]])
+	})
+
+	it("keeps the overheat recovery margin when read failures interrupt an overheat", async () => {
+		const { controller, ipmi } = setup()
+		ipmi.sensorText = withCpuTemps(91, 60)
+		await controller.poll("s1")
+		ipmi.failReads = true
+		for (let i = 0; i < 3; i++) await controller.poll("s1")
+		expect(controller.status("s1").failsafeReason).toMatch(/polls in a row failed/)
+		ipmi.failReads = false
+		ipmi.sensorText = withCpuTemps(87, 60)
+		await controller.poll("s1")
+		expect(controller.status("s1")).toMatchObject({ mode: "failsafe", failsafeReason: "Temp is 91 °C, at or above its 90 °C limit" })
+		ipmi.sensorText = withCpuTemps(80, 60)
+		await controller.poll("s1")
+		expect(controller.status("s1").mode).toBe("manual")
+	})
+
+	it("re-sends automatic when shutdown starts while a manual command is in flight", async () => {
+		const { controller, ipmi } = setup()
+		let finishManual
+		ipmi.enableManualFancontrol = () =>
+			new Promise((resolve) => {
+				finishManual = () => {
+					ipmi.calls.push(["manual"])
+					resolve()
+				}
+			})
+		const poll = controller.poll("s1")
+		await new Promise((resolve) => setTimeout(resolve, 10))
+		const shutdown = controller.shutdown({ waitMs: 20 })
+		await new Promise((resolve) => setTimeout(resolve, 50))
+		finishManual()
+		await Promise.all([poll, shutdown])
+		expect(ipmi.commands()).toEqual([["automatic"], ["manual"], ["automatic"]])
+	})
+
+	it("hands back servers whose release is still queued when shutdown runs", async () => {
+		const { controller, ipmi, server, servers } = setup()
+		await controller.poll("s1")
+		let unblock
+		controller.enqueue("s1", () => new Promise((resolve) => (unblock = resolve)))
+		const deleted = { ...server }
+		servers.length = 0
+		controller.releaseLater(deleted)
+		ipmi.reset()
+		await controller.shutdown({ waitMs: 20 })
+		expect(ipmi.commands()).toEqual([["automatic"]])
+		unblock()
+	})
+
+	it("measures staleness of a server added later from when it was added", async () => {
+		const { controller, servers, advance } = setup({}, { pollIntervalMs: 30000 })
+		await controller.runCycle()
+		advance(10 * 60 * 1000)
+		await controller.runCycle()
+		servers.push({ ...servers[0], id: "s2", name: "new" })
+		controller.state("s2")
+		advance(60 * 1000)
+		expect(controller.health().problems.join(" ")).not.toMatch(/new: no sensor reading/)
+	})
 })

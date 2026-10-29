@@ -85,6 +85,8 @@ describe("sanitize", () => {
 		expect(() => sanitize({ manualFanControl: "yes" })).toThrow(/true or false/)
 		expect(() => sanitize({ hysteresis: 50 })).toThrow(/between 0 and 20/)
 		expect(() => sanitize({ name: "" })).toThrow(/required/)
+		expect(() => sanitize({ password: "pa\u0000ss" })).toThrow(/control characters/)
+		expect(() => sanitize({ username: "ro\not" })).toThrow(/control characters/)
 	})
 
 	it("accepts addresses, numeric strings and clearing the failsafe temperature", () => {

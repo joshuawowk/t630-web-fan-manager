@@ -104,24 +104,18 @@ const FanCurveGraph = ({ operatingPoint }) => {
 										>
 											{fields.length > 1 && (
 												<>
-													{/* Fill area under curve */}
-													<path
-														d={
-															fields.length > 0
-																? `M 0,100% ` +
-																  fields
-																		.map((field, index) => {
-																			const x = (index / (fields.length - 1)) * 100
-																			const y = 100 - (fancurve[index] || 0)
-																			return `L ${x}%,${y}%`
-																		})
-																		.join(" ") +
-																  ` L 100%,100% Z`
-																: ""
-														}
-														fill="#1890ff"
-														fillOpacity="0.1"
-													/>
+													{/* Fill area under curve: path data can't use % units, so draw it in its own 0-100 coordinate space */}
+													<svg viewBox="0 0 100 100" preserveAspectRatio="none" width="100%" height="100%" overflow="visible">
+														<polygon
+															points={[
+																"0,100",
+																...fields.map((field, index) => `${(index / (fields.length - 1)) * 100},${100 - (fancurve[index] || 0)}`),
+																"100,100",
+															].join(" ")}
+															fill="#1890ff"
+															fillOpacity="0.1"
+														/>
+													</svg>
 													{/* Connecting lines */}
 													{fields.map((field, index) => {
 														if (index === fields.length - 1) return null

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react"
+import React, { useEffect, useRef, useState } from "react"
 import "antd/dist/antd.css"
 import { Button, Card, Layout, Menu, Tabs, Tag } from "antd"
 import { LaptopOutlined, PlusOutlined, SettingOutlined } from "@ant-design/icons"
@@ -43,8 +43,24 @@ function App() {
 	const [adding, setAdding] = useState(false)
 	const connected = useConnected()
 
+	const knownIds = useRef(null)
+
 	useEffect(() => {
-		const onServers = (list) => setServers(list)
+		const onServers = (list) => {
+			// Show servers added after the first load (e.g. from the Add server dialog) without a trip to the menu
+			if (knownIds.current) {
+				const added = list.map((server) => server.id).filter((id) => !knownIds.current.has(id))
+				if (added.length) {
+					setSelectedKeys((previous) => {
+						const next = [...previous, ...added]
+						setValue("selectedKeys", next)
+						return next
+					})
+				}
+			}
+			knownIds.current = new Set(list.map((server) => server.id))
+			setServers(list)
+		}
 		const onSensordata = (data) =>
 			setServers((prev) => prev.map((s) => (s.id === data.id ? { ...s, name: data.name ?? s.name, sensordata: data.sensordata, status: data.status } : s)))
 		socket.on("servers", onServers)

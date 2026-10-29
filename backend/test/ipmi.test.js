@@ -63,6 +63,15 @@ describe("createIpmi", () => {
 		expect(error.message).not.toContain("-P")
 	})
 
+	it("does not leak a password that execFile rejects", async () => {
+		const error = await createIpmi({ ipmitoolPath: MOCK_IPMITOOL })
+			.getSensors({ ...config, password: "hunter2\u0000x" })
+			.catch((e) => e)
+		expect(error.name).toBe("IpmiError")
+		expect(error.message).toMatch(/could not be started/)
+		expect(error.message).not.toContain("hunter2")
+	})
+
 	it("reports a segfaulting ipmitool", async () => {
 		setState({ segv: true })
 		const error = await createIpmi({ ipmitoolPath: MOCK_IPMITOOL })

@@ -102,7 +102,7 @@ io.on("connection", (socket) => {
 		)
 		if (connectionChanged) {
 			// The old iDRAC may be left in manual mode; hand it back before switching to the new connection
-			controller.enqueue(id, () => controller.release(before)).catch((error) => console.error(`[${before.name}] ${error.message}`))
+			controller.releaseLater(before).catch((error) => console.error(`[${before.name}] Could not hand fan control back to the iDRAC: ${error.message}`))
 			controller.enqueue(id, () => controller.resetConnection(id))
 		}
 		broadcastServers()
@@ -116,7 +116,7 @@ io.on("connection", (socket) => {
 		if (!config) throw new ValidationError("Server not found")
 		store.remove(id)
 		broadcastServers()
-		const release = controller.enqueue(id, () => controller.release(config, { timeout: 8000 }))
+		const release = controller.releaseLater(config, { timeout: 8000 })
 		release
 			.catch((error) => console.error(`[${config.name}] Could not hand fan control back to the iDRAC: ${error.message}`))
 			.finally(() => {

@@ -9,6 +9,9 @@ const CONNECTION_FIELDS = ["address", "username", "password"]
 const DEFAULT_FAN_CURVE = [10, 10, 10, 15, 20, 30, 45, 60, 80, 100, 100]
 const EDITABLE_FIELDS = ["name", ...CONNECTION_FIELDS, "warnspeed", "manualFanControl", "fancurve", "hysteresis", "failsafeTemperature"]
 
+// Rejected in every text field; a NUL in the password would also make execFile throw with the value in its message
+const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/
+
 class ValidationError extends Error {}
 
 function newId() {
@@ -27,6 +30,7 @@ function toText(value, field, { max, pattern, message }) {
 	if (typeof value !== "string" || !value.trim()) throw new ValidationError(`${field} is required`)
 	const text = value.trim()
 	if (text.length > max) throw new ValidationError(`${field} is too long`)
+	if (CONTROL_CHARACTERS.test(text)) throw new ValidationError(`${field} contains control characters`)
 	if (pattern && !pattern.test(text)) throw new ValidationError(message || `${field} is invalid`)
 	return text
 }
@@ -55,6 +59,7 @@ function sanitize(input) {
 			case "password":
 				if (value === "" || value === null) break
 				if (typeof value !== "string" || value.length > 128) throw new ValidationError("Password must be a string of at most 128 characters")
+				if (CONTROL_CHARACTERS.test(value)) throw new ValidationError("Password contains control characters")
 				clean.password = value
 				break
 			case "warnspeed":

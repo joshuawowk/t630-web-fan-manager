@@ -24,7 +24,8 @@ export default function ServerForm({ server }) {
 	}, [configKey]) // eslint-disable-line react-hooks/exhaustive-deps
 
 	const onFinish = async (values) => {
-		const update = { ...values, failsafeTemperature: values.failsafeTemperature ?? null }
+		// A cleared InputNumber gives null: hysteresis falls back to off, failsafe temperature to the sensors' thresholds
+		const update = { ...values, hysteresis: values.hysteresis ?? 0, failsafeTemperature: values.failsafeTemperature ?? null }
 		if (!update.password) delete update.password
 		const result = await request("updateServer", { id: server.id, update })
 		if (result.ok) {

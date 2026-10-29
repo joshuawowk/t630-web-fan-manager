@@ -40,6 +40,16 @@ function createIpmi({ ipmitoolPath = "ipmitool", timeoutMs = 20000, dryRun = fal
 	function run(config, args, { operation = args[0], timeout = timeoutMs } = {}) {
 		const argv = ["-I", "lanplus", "-H", String(config.address), "-U", String(config.username), "-E", ...args]
 		return new Promise((resolve, reject) => {
+			const fail = (message, details) => reject(new IpmiError(redact(message, [config.password]), { operation, ...details }))
+			try {
+				spawn(resolve, fail)
+			} catch (error) {
+				// execFile throws synchronously on invalid arguments, quoting them (escaped, so redact() can't find the password)
+				fail(`ipmitool ${args.join(" ")} could not be started: ${error.code || "invalid argument"}`, { code: error.code })
+			}
+		})
+
+		function spawn(resolve, fail) {
 			execFile(
 				ipmitoolPath,
 				argv,
@@ -57,11 +67,10 @@ function createIpmi({ ipmitoolPath = "ipmitool", timeoutMs = 20000, dryRun = fal
 					else if (error.signal) detail = `killed by ${error.signal}`
 					else detail = `exit code ${error.code}`
 					const output = summarize(stderr || stdout)
-					const message = redact(`ipmitool ${args.join(" ")} failed (${detail})${output ? `: ${output}` : ""}`, [config.password])
-					reject(new IpmiError(message, { operation, code: error.code, signal: error.signal, timedOut: error.killed }))
+					fail(`ipmitool ${args.join(" ")} failed (${detail})${output ? `: ${output}` : ""}`, { code: error.code, signal: error.signal, timedOut: error.killed })
 				}
 			)
-		})
+		}
 	}
 
 	function write(config, args, options) {

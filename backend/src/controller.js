@@ -5,11 +5,13 @@ const { FAILSAFE_RECOVERY_MARGIN, calculateManualFanSpeed, findOverheatedSensor,
 // Repeat an unchanged log line (fan target, recurring error) at most this often
 const SUMMARY_INTERVAL_MS = 10 * 60 * 1000
 
-function createState() {
+function createState(now) {
 	return {
+		createdAt: now,
 		sensordata: [],
 		mode: "unknown",
-		// What the iDRAC was last successfully told: "manual", "automatic" or null (unknown)
+		// What the iDRAC was last successfully told: "manual", "automatic" or null (unknown, including
+		// while a mode command is in flight or after one failed, since it may still have taken effect)
 		appliedMode: null,
 		targetFanSpeed: null,
 		controlTemperature: null,
@@ -17,6 +19,9 @@ function createState() {
 		hottestSensor: null,
 		failsafeKind: null,
 		failsafeReason: null,
+		// Reason of an overheat that has not cooled down yet; kept apart from failsafeKind so a failsafe
+		// for another reason can't cut the recovery margin short
+		overheat: null,
 		lastUpdate: null,
 		lastError: null,
 		consecutiveFailures: 0,
@@ -48,6 +53,8 @@ class FanController {
 		this.onCycle = onCycle
 		this.states = new Map()
 		this.queues = new Map()
+		// Connection details of deleted or re-addressed servers whose hand-back is still queued
+		this.pendingReleases = new Set()
 		this.stopping = false
 		this.timer = null
 		this.startedAt = now()
@@ -56,7 +63,7 @@ class FanController {
 	}
 
 	state(id) {
-		if (!this.states.has(id)) this.states.set(id, createState())
+		if (!this.states.has(id)) this.states.set(id, createState(this.now()))
 		return this.states.get(id)
 	}
 
@@ -98,6 +105,7 @@ class FanController {
 	}
 
 	start() {
+		for (const server of this.getServers()) this.state(server.id)
 		const loop = async () => {
 			const started = this.now()
 			try {
@@ -144,14 +152,13 @@ class FanController {
 			this.fail(server, state, "sensor", error)
 		}
 
-		if (!state.cycleFailed) {
-			try {
-				if (server.manualFanControl) await this.controlManually(server, state)
-				else await this.handToIdrac(server, state)
-			} catch (error) {
-				state.mode = "unknown"
-				this.fail(server, state, error.operation || "control", error)
-			}
+		try {
+			// Handing control to the iDRAC needs no readings, so it must not wait for a successful read
+			if (!server.manualFanControl) await this.handToIdrac(server, state)
+			else if (!state.cycleFailed) await this.controlManually(server, state)
+		} catch (error) {
+			state.mode = "unknown"
+			this.fail(server, state, error.operation || "control", error)
 		}
 
 		if (state.cycleFailed && server.manualFanControl && state.consecutiveFailures >= this.failsafeReadFailures) {
@@ -162,15 +169,22 @@ class FanController {
 		this.publish(server, state)
 	}
 
+	async setMode(server, state, mode, options) {
+		state.appliedMode = null
+		if (mode === "manual") await this.ipmi.enableManualFancontrol(server, options)
+		else await this.ipmi.enableAutomaticFancontrol(server, options)
+		state.appliedMode = mode
+	}
+
 	async handToIdrac(server, state) {
 		state.failsafeKind = null
 		state.failsafeReason = null
+		state.overheat = null
 		state.targetFanSpeed = null
 		state.controlTemperature = null
 		if (state.appliedMode !== "automatic") {
 			if (this.stopping) return
-			await this.ipmi.enableAutomaticFancontrol(server)
-			state.appliedMode = "automatic"
+			await this.setMode(server, state, "automatic")
 			this.log.log(`[${server.name}] Fan control handed to the iDRAC (automatic)`)
 		}
 		state.mode = "automatic"
@@ -181,10 +195,16 @@ class FanController {
 			return this.failsafe(server, state, "no_temperature", "the iDRAC reported no temperature readings")
 		}
 		const overheated = findOverheatedSensor(state.sensordata, server.failsafeTemperature)
-		if (overheated) return this.failsafe(server, state, "overheat", describeOverheat(overheated))
+		if (overheated) {
+			state.overheat = describeOverheat(overheated)
+			return this.failsafe(server, state, "overheat", state.overheat)
+		}
 		// After an overheat, leave the iDRAC in charge until everything is comfortably below its limit
-		if (state.failsafeKind === "overheat" && findOverheatedSensor(state.sensordata, server.failsafeTemperature, FAILSAFE_RECOVERY_MARGIN)) {
-			return this.failsafe(server, state, "overheat", state.failsafeReason)
+		if (state.overheat) {
+			if (findOverheatedSensor(state.sensordata, server.failsafeTemperature, FAILSAFE_RECOVERY_MARGIN)) {
+				return this.failsafe(server, state, "overheat", state.overheat)
+			}
+			state.overheat = null
 		}
 
 		const result = calculateManualFanSpeed(
@@ -194,9 +214,12 @@ class FanController {
 		if (this.stopping) return
 		// Sent every poll, not just at startup: the iDRAC reverts to automatic whenever it restarts or the host
 		// loses power, and silently ignores speed commands until manual mode is re-enabled. Harmless when already manual.
-		await this.ipmi.enableManualFancontrol(server)
-		state.appliedMode = "manual"
-		if (this.stopping) return
+		await this.setMode(server, state, "manual")
+		if (this.stopping) {
+			// shutdown() may have sent automatic while this command was in flight; make sure automatic lands last
+			await this.setMode(server, state, "automatic", { timeout: 5000 })
+			return
+		}
 		await this.ipmi.setFanSpeed(server, result.targetFanSpeed)
 
 		if (state.failsafeKind) this.log.log(`[${server.name}] Failsafe cleared; the app is controlling the fans again`)
@@ -223,8 +246,7 @@ class FanController {
 		state.targetFanSpeed = null
 		if (state.appliedMode === "automatic" || this.stopping) return
 		try {
-			await this.ipmi.enableAutomaticFancontrol(server)
-			state.appliedMode = "automatic"
+			await this.setMode(server, state, "automatic")
 		} catch (error) {
 			this.fail(server, state, "automatic", error)
 		}
@@ -260,11 +282,20 @@ class FanController {
 	// Give fan control back to the iDRAC, e.g. before deleting a server or changing its connection details
 	async release(server, { timeout } = {}) {
 		const state = this.state(server.id)
-		if (!server.manualFanControl && state.appliedMode !== "manual") return false
-		await this.ipmi.enableAutomaticFancontrol(server, timeout ? { timeout } : undefined)
-		state.appliedMode = "automatic"
+		if (!server.manualFanControl && state.appliedMode === "automatic") return false
+		await this.setMode(server, state, "automatic", timeout ? { timeout } : undefined)
 		this.log.log(`[${server.name}] Fan control handed back to the iDRAC`)
 		return true
+	}
+
+	// Queue release() for a server that is being deleted or re-addressed. Until it has run, shutdown() hands
+	// that connection back too, in case the queue is still busy when the process stops.
+	releaseLater(server, options) {
+		const snapshot = { ...server }
+		this.pendingReleases.add(snapshot)
+		const done = this.enqueue(server.id, () => this.release(snapshot, options))
+		done.finally(() => this.pendingReleases.delete(snapshot)).catch(() => {})
+		return done
 	}
 
 	resetConnection(id) {
@@ -275,6 +306,7 @@ class FanController {
 		state.consecutiveFailures = 0
 		state.failsafeKind = null
 		state.failsafeReason = null
+		state.overheat = null
 	}
 
 	forget(id) {
@@ -289,7 +321,7 @@ class FanController {
 		if (now - lastCycle > staleAfterMs) problems.push(`Control loop has not completed a cycle for ${Math.round((now - lastCycle) / 1000)} s`)
 		const servers = this.getServers().map((server) => {
 			const state = this.state(server.id)
-			const since = state.lastUpdate ?? this.startedAt
+			const since = state.lastUpdate ?? state.createdAt
 			if (now - since > staleAfterMs) problems.push(`${server.name}: no sensor reading for ${Math.round((now - since) / 1000)} s`)
 			if (state.mode === "failsafe") problems.push(`${server.name}: failsafe, ${state.failsafeReason}`)
 			return { id: server.id, name: server.name, mode: state.mode, lastUpdate: state.lastUpdate, consecutiveFailures: state.consecutiveFailures }
@@ -304,12 +336,19 @@ class FanController {
 		clearTimeout(this.timer)
 		await Promise.race([Promise.allSettled([...this.queues.values()]), sleep(waitMs)])
 		if (!restoreAuto) return []
-		const servers = this.getServers().filter((server) => server.manualFanControl || this.state(server.id).appliedMode === "manual")
-		const results = await Promise.allSettled(servers.map((server) => this.ipmi.enableAutomaticFancontrol(server, { timeout })))
+		const candidates = [...this.getServers().filter((server) => server.manualFanControl || this.state(server.id).appliedMode !== "automatic"), ...this.pendingReleases]
+		const seen = new Set()
+		const targets = candidates.filter((server) => {
+			const key = `${server.address}|${server.username}`
+			if (seen.has(key)) return false
+			seen.add(key)
+			return true
+		})
+		const results = await Promise.allSettled(targets.map((server) => this.ipmi.enableAutomaticFancontrol(server, { timeout })))
 		results.forEach((result, i) => {
-			const server = servers[i]
+			const server = targets[i]
 			if (result.status === "fulfilled") {
-				this.state(server.id).appliedMode = "automatic"
+				if (this.states.has(server.id)) this.state(server.id).appliedMode = "automatic"
 				this.log.log(`[${server.name}] Fan control handed back to the iDRAC`)
 			} else {
 				this.log.error(`[${server.name}] Could not hand fan control back to the iDRAC: ${redact(result.reason?.message, [server.password])}`)
